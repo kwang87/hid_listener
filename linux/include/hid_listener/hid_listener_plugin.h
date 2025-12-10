@@ -34,6 +34,10 @@ public:
 
     static HidListener *Get() { return HidListener::listenerInstance; }
 
+    void StartWorkerThread();
+    void StopWorkerThread();
+    bool IsRunning() const;
+
 private:
     void WorkerThread();
     std::thread m_workerThread;
