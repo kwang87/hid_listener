@@ -60,9 +60,11 @@ class MacOsHidListenerBackend extends HidListenerBackend {
     }
 
     final RawKeyEvent rawKeyEvent;
+    final KeyEvent keyEvent;
     if (event.eventType ==
         bindings.MacOsKeyboardEventType.MacOsKeyboardEventTypeKeyDown) {
       rawKeyEvent = RawKeyDownEvent(data: eventData);
+      // keyEvent = RawKeyDownEvent(data: eventData);
     } else {
       rawKeyEvent = RawKeyUpEvent(data: eventData);
     }
@@ -83,7 +85,6 @@ class MacOsHidListenerBackend extends HidListenerBackend {
 
   RawKeyEventData? _mediaKeyboardProc(bindings.MacOsKeyboardEvent event) {
     LogicalKeyboardKey? specifiedLogicalKey;
-
     switch (event.mediaEventType) {
       case bindings.MacOsMediaEventType.MacOsMediaEventTypePlay:
         specifiedLogicalKey = LogicalKeyboardKey.mediaPlayPause;

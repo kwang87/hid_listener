@@ -1,5 +1,6 @@
 import 'dart:ffi' as ffi;
 import 'dart:isolate';
+import 'dart:ui';
 
 import 'package:flutter/services.dart';
 import 'package:hid_listener/src/hid_listener.dart';
@@ -8,11 +9,31 @@ import 'package:hid_listener/src/shared/hid_listener_shared.dart' as shared;
 import 'hid_listener_bindings_linux.dart' as bindings;
 
 class LinuxHidListenerBackend extends HidListenerBackend {
+  final Map<int, PhysicalKeyboardKey> x11ToPhysical = {
+    65505: PhysicalKeyboardKey.shiftLeft,
+    65506: PhysicalKeyboardKey.shiftRight,
+    65507: PhysicalKeyboardKey.controlLeft,
+    65508: PhysicalKeyboardKey.controlRight,
+    65513: PhysicalKeyboardKey.altLeft,
+    65514: PhysicalKeyboardKey.altRight,
+    65509: PhysicalKeyboardKey.capsLock,
+    65289: PhysicalKeyboardKey.tab,
+  };
+
+  final fallbackPhysicalKeyMap = {
+    65513: PhysicalKeyboardKey(0x000700e2), // altLeft
+    65514: PhysicalKeyboardKey(0x000700e6), // altRight
+    65505: PhysicalKeyboardKey(0x000700e1), // shiftLeft
+    65506: PhysicalKeyboardKey(0x000700e5), // shiftRight
+    65507: PhysicalKeyboardKey(0x000700e0), // ctrlLeft
+    65508: PhysicalKeyboardKey(0x000700e4), // ctrlRight
+    65509: PhysicalKeyboardKey(0x00070039), // capsLock
+  };
+
   LinuxHidListenerBackend(ffi.DynamicLibrary library)
       : _bindings = bindings.HidListenerBindingsLinux(library) {
     _bindings.InitializeDartAPI(ffi.NativeApi.initializeApiDLData);
   }
-
   @override
   bool initialize() {
     return _bindings.InitializeListeners();
@@ -36,13 +57,29 @@ class LinuxHidListenerBackend extends HidListenerBackend {
 
   void _keyboardProc(dynamic e) {
     final eventAddr = ffi.Pointer<bindings.LinuxKeyboardEvent>.fromAddress(e);
-
+    // print('eventAddr: $eventAddr');
     final pressed =
         eventAddr.ref.eventType == bindings.LinuxKeyboardEventType.LKE_KeyDown
             ? 0xffffffff
             : 0x0;
+    // print('pressed: $pressed');
+
+    // final logicalKey = LogicalKeyboardKey.findKeyByKeyId(eventAddr.ref.keyCode);
+    // print(eventAddr.ref.keyCode);
+    // print('logical: $logicalKey');
+    // final physicalKey =
+    //     PhysicalKeyboardKey.findKeyByCode(eventAddr.ref.scanCode);
+    // print(eventAddr.ref.scanCode);
+    // print('physicalKey: $physicalKey');
+    // print(eventAddr.address);
+
+    // PhysicalKeyboardKey? physicalKey2 =
+    //     PhysicalKeyboardKey.findKeyByCode(eventAddr.ref.scanCode) ??
+    //         x11ToPhysical[eventAddr.ref.keyCode];
+    // print('physicalKey2: $physicalKey2');
 
     final keyHelper = GtkKeyHelper();
+
     final firstEventData = RawKeyEventDataLinux(
         keyHelper: keyHelper,
         unicodeScalarValues: eventAddr.ref.unicodeScalarValues,

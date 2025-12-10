@@ -23,6 +23,8 @@ extern "C"
     FLUTTER_PLUGIN_EXPORT bool SetMouseListener(Dart_Port port);
     FLUTTER_PLUGIN_EXPORT void InitializeDartAPI(void* data);
     FLUTTER_PLUGIN_EXPORT bool InitializeListeners();
+    FLUTTER_PLUGIN_EXPORT void UnsetKeyboardListener();    
+    FLUTTER_PLUGIN_EXPORT void UnsetMouseListener();       
 #if defined(__cplusplus)
 }
 #endif

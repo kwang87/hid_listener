@@ -10,19 +10,28 @@ var prevFlags = UInt64(256)
 func keyboardEventCallback(
   proxy _: CGEventTapProxy, type: CGEventType, event: CGEvent, _: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
+  NSLog("✅ keyboardEventCallback") //
   DispatchQueue.main.async {
     if let nsEvent = NSEvent(cgEvent: event) {
-      let eventType = {
-        if type == .flagsChanged {
-          return prevFlags < event.flags.rawValue ? MacOsKeyboardEventType.KeyDown : MacOsKeyboardEventType.KeyUp
-        } else if type == .keyDown {
-          return MacOsKeyboardEventType.KeyDown
-        }
-        return MacOsKeyboardEventType.KeyUp
-      }()
+      let eventType: MacOsKeyboardEventType
+      var characters = ""
+      var charactersIgnoringModifiers = ""
 
-      let characters = nsEvent.characters ?? " "
-      let charactersIgnoringModifiers = nsEvent.charactersIgnoringModifiers ?? " "
+      if type == .flagsChanged {
+        eventType = prevFlags < event.flags.rawValue ? .KeyDown : .KeyUp
+        // 🚩 flagsChanged 이벤트는 절대 characters 접근하지 말 것
+        characters = ""
+        charactersIgnoringModifiers = ""
+      } else if type == .keyDown {
+        eventType = .KeyDown
+        characters = nsEvent.characters ?? " "
+        charactersIgnoringModifiers = nsEvent.charactersIgnoringModifiers ?? " "
+      } else {
+        eventType = .KeyUp
+        characters = nsEvent.characters ?? " "
+        charactersIgnoringModifiers = nsEvent.charactersIgnoringModifiers ?? " "
+      }
+
       let keyCode = Int(nsEvent.keyCode)
       let modifiers = Int(nsEvent.modifierFlags.rawValue)
       let keyboardEvent = Unmanaged<MacOsKeyboardEvent>.passRetained(MacOsKeyboardEvent(
@@ -37,62 +46,95 @@ func keyboardEventCallback(
 
       let pointerEvent = UnsafeMutablePointer<MacOsKeyboardEvent>.allocate(capacity: 1)
       pointerEvent.initialize(to: keyboardEvent.takeRetainedValue())
-
+      NSLog("✅ notifyDart") //
       notifyDart(port: keyboardListenerPort, data: pointerEvent)
     }
+    // === 여기서 prevFlags를 반드시 업데이트 ===
+    prevFlags = event.flags.rawValue
   }
-
+  NSLog("✅ end keyboardEventCallback") //
   return Unmanaged.passRetained(event)
 }
 
 func mediaEventCallback(
   proxy _: CGEventTapProxy, type _: CGEventType, event: CGEvent, _: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
-  if let nsEvent = NSEvent(cgEvent: event) {
-    let keyCode = (nsEvent.data1 & 0xFFFF_0000) >> 16
-    let keyDown = ((nsEvent.data1 & 0xFF00) >> 8) == 0xA
+  DispatchQueue.main.async {
+    NSLog("✅ mediaEventCallback") //
+    NSLog("event \(event)") 
+    
+    // if event.type.rawValue != NX_SYSDEFINED {
+    //     NSLog("⚠️ Unsupported event.type.rawValue(NX_SYSDEFINED): %d, skip", event.type.rawValue)
+    //   return Unmanaged.passRetained(event)
+    // }
+  
+    // // NSEvent 생성 안전하게 시도
+    // guard let nsEvent = NSEvent(cgEvent: event) else {
+    //   NSLog("⚠️ NSEvent creation failed, skip")
+    //   return Unmanaged.passRetained(event)
+    // }
 
-    let mediaEventType: MacOsMediaEventType? = {
-      switch Int32(keyCode) {
-      case NX_KEYTYPE_PLAY: return MacOsMediaEventType.Play
-      case NX_KEYTYPE_PREVIOUS: return MacOsMediaEventType.Previous
-      case NX_KEYTYPE_NEXT: return MacOsMediaEventType.Next
-      case NX_KEYTYPE_REWIND: return MacOsMediaEventType.Rewind
-      case NX_KEYTYPE_FAST: return MacOsMediaEventType.Fast
-      case NX_KEYTYPE_MUTE: return MacOsMediaEventType.Mute
-      case NX_KEYTYPE_BRIGHTNESS_UP: return MacOsMediaEventType.BrightnessUp
-      case NX_KEYTYPE_BRIGHTNESS_DOWN: return MacOsMediaEventType.BrightnessDown
-      case NX_KEYTYPE_SOUND_UP: return MacOsMediaEventType.VolumeUp
-      case NX_KEYTYPE_SOUND_DOWN: return MacOsMediaEventType.VolumeDown
-      default: return nil
-      }
-    }()
+    if let nsEvent = NSEvent(cgEvent: event) {
+      // if nsEvent.subtype.rawValue != 8 {
+      //   NSLog("⚠️ Unsupported media subtype: %d, skip", nsEvent.subtype.rawValue)
+      //   return Unmanaged.passRetained(event)
+      // }
 
-    if mediaEventType != nil {
-      let eventType = {
-        switch keyDown {
-        case true: return MacOsKeyboardEventType.KeyDown
-        case false: return MacOsKeyboardEventType.KeyUp
+      NSLog("nsEvent %@", nsEvent)
+      let keyCode = (UInt32(bitPattern: Int32(nsEvent.data1)) & 0xFFFF0000) >> 16
+      NSLog("KeyCode: %d", keyCode)
+      //let keyCode = (nsEvent.data1 & 0xFFFF_0000) >> 16
+      let keyDown = ((nsEvent.data1 & 0xFF00) >> 8) == 0xA
+      NSLog("KeyDown %d", keyDown ? 1 : 0)
+
+      let mediaEventType: MacOsMediaEventType? = {
+        switch Int32(keyCode) {
+        case NX_KEYTYPE_PLAY: return MacOsMediaEventType.Play
+        case NX_KEYTYPE_PREVIOUS: return MacOsMediaEventType.Previous
+        case NX_KEYTYPE_NEXT: return MacOsMediaEventType.Next
+        case NX_KEYTYPE_REWIND: return MacOsMediaEventType.Rewind
+        case NX_KEYTYPE_FAST: return MacOsMediaEventType.Fast
+        case NX_KEYTYPE_MUTE: return MacOsMediaEventType.Mute
+        case NX_KEYTYPE_BRIGHTNESS_UP: return MacOsMediaEventType.BrightnessUp
+        case NX_KEYTYPE_BRIGHTNESS_DOWN: return MacOsMediaEventType.BrightnessDown
+        case NX_KEYTYPE_SOUND_UP: return MacOsMediaEventType.VolumeUp
+        case NX_KEYTYPE_SOUND_DOWN: return MacOsMediaEventType.VolumeDown 
+        default: return nil
         }
       }()
 
-      let keyboardEvent = Unmanaged<MacOsKeyboardEvent>.passRetained(MacOsKeyboardEvent(
-        eventType: eventType,
-        characters: " ",
-        charactersIgnoringModifiers: " ",
-        keyCode: 0,
-        modifiers: 0,
-        isMedia: true,
-        mediaEventType: mediaEventType!
-      ))
+      // if mediaEventType == nil {
+      //   NSLog("⚠️ mediaEventType nil, skip notifyDart")
+      //   return Unmanaged.passRetained(event)
+      // }
 
-      let pointerEvent = UnsafeMutablePointer<MacOsKeyboardEvent>.allocate(capacity: 1)
-      pointerEvent.initialize(to: keyboardEvent.takeRetainedValue())
 
-      notifyDart(port: keyboardListenerPort, data: pointerEvent)
+      if mediaEventType != nil {
+        let eventType = {
+          switch keyDown {
+          case true: return MacOsKeyboardEventType.KeyDown
+          case false: return MacOsKeyboardEventType.KeyUp
+          }
+        }()
+
+        let keyboardEvent = Unmanaged<MacOsKeyboardEvent>.passRetained(MacOsKeyboardEvent(
+          eventType: eventType,
+          characters: " ",
+          charactersIgnoringModifiers: " ",
+          keyCode: 0,
+          modifiers: 0,
+          isMedia: true,
+          mediaEventType: mediaEventType!
+        ))
+
+        let pointerEvent = UnsafeMutablePointer<MacOsKeyboardEvent>.allocate(capacity: 1)
+        pointerEvent.initialize(to: keyboardEvent.takeRetainedValue())
+        NSLog("✅ notifyDart in Media") //
+        notifyDart(port: keyboardListenerPort, data: pointerEvent)
+      }
     }
   }
-
+  NSLog("✅ end mediaEventCallback") //
   return Unmanaged.passRetained(event)
 }
 
@@ -148,9 +190,11 @@ public class HidListener {
   }
 
   public func initialize() -> Bool {
+    NSLog("✅ initialize called") //
     let keyboardEventMask =
       (1 << CGEventType.keyDown.rawValue)
         | (1 << CGEventType.keyUp.rawValue)
+        | (1 << CGEventType.flagsChanged.rawValue)
 
     guard
       let keyboardEventTap = CGEvent.tapCreate(
@@ -246,6 +290,7 @@ func Internal_InitializeDartAPI(data: UnsafeMutableRawPointer) {
 }
 
 func Internal_InitializeListeners() -> Bool {
+  NSLog("✅ Internal_InitializeListeners called") //
   if listenerInstance == nil {
     listenerInstance = HidListener()
   }
@@ -286,6 +331,7 @@ func Internal_InitializeListeners() -> Bool {
   }
 
   @objc public static func InitializeListeners() -> Bool {
+    NSLog("✅ InitializeListeners called") //
     return Internal_InitializeListeners()
   }
 

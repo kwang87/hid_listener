@@ -91,8 +91,35 @@ void NotifyDart(Dart_Port port, const void* work) {
     Dart_PostCObject_DL(port, &cObject);
 }
 
+void HidListener::StartWorkerThread() {
+    if (m_running) return;
+  
+    m_running = true;
+    m_workerThread = std::thread([&] {
+      this->WorkerThread();
+    });
+  }
+  
+  void HidListener::StopWorkerThread() {
+    if (!m_running) return;
+  
+    m_running = false;
+    XCloseDisplay(m_display);
+    if (m_workerThread.joinable())
+      m_workerThread.join();
+  }
+
+  
+bool HidListener::IsRunning() const {
+    return m_running;
+  }
+  
 void HidListener::WorkerThread() {
     while(m_running) {
+        if (keyboardListenerPort == 0 && mouseListenerPort == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
         XEvent event;
         XNextEvent(m_display, &event);
         XGenericEventCookie* cookie = &event.xcookie;
@@ -181,17 +208,40 @@ void HidListener::WorkerThread() {
 
 extern "C" {
 
+// FLUTTER_PLUGIN_EXPORT bool SetKeyboardListener(Dart_Port port) {
+//     if(HidListener::Get() == nullptr) return false;
+//     keyboardListenerPort = port;
+//     return true;
+// }
+
 FLUTTER_PLUGIN_EXPORT bool SetKeyboardListener(Dart_Port port) {
-    if(HidListener::Get() == nullptr) return false;
+    if (HidListener::Get() == nullptr) return false;
     keyboardListenerPort = port;
+  
+    if (!HidListener::Get()->IsRunning())
+      HidListener::Get()->StartWorkerThread();
+  
     return true;
-}
+  }
+  
+
+// FLUTTER_PLUGIN_EXPORT bool SetMouseListener(Dart_Port port) {
+//     if(HidListener::Get() == nullptr) return false;
+//     mouseListenerPort = port;
+//     return true;
+// }
+
 
 FLUTTER_PLUGIN_EXPORT bool SetMouseListener(Dart_Port port) {
-    if(HidListener::Get() == nullptr) return false;
+    if (HidListener::Get() == nullptr) return false;
     mouseListenerPort = port;
+  
+    if (!HidListener::Get()->IsRunning())
+      HidListener::Get()->StartWorkerThread();
+  
     return true;
-}
+  }
+  
 
 FLUTTER_PLUGIN_EXPORT void InitializeDartAPI(void* data) {
     Dart_InitializeApiDL(data);
@@ -200,5 +250,20 @@ FLUTTER_PLUGIN_EXPORT void InitializeDartAPI(void* data) {
 FLUTTER_PLUGIN_EXPORT bool InitializeListeners() {
     return true;
 }
+
+FLUTTER_PLUGIN_EXPORT void UnsetKeyboardListener() {
+    keyboardListenerPort = 0;
+  
+    if (keyboardListenerPort == 0 && mouseListenerPort == 0)
+      HidListener::Get()->StopWorkerThread();
+  }
+  
+  FLUTTER_PLUGIN_EXPORT void UnsetMouseListener() {
+    mouseListenerPort = 0;
+  
+    if (keyboardListenerPort == 0 && mouseListenerPort == 0)
+      HidListener::Get()->StopWorkerThread();
+  }
+  
 
 }

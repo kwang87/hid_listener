@@ -44,6 +44,17 @@ abstract class HidListenerBackend {
     return _lastKeyboardListenerId++;
   }
 
+  //KeyEvent
+  int? addKeyboardListener2(void Function(KeyEvent) listener) {
+    if (!_keyboardRegistered) {
+      if (!registerKeyboard()) return null;
+      _keyboardRegistered = true;
+    }
+
+    keyboardListeners2.addAll({_lastKeyboardListenerId: listener});
+    return _lastKeyboardListenerId++;
+  }
+
   void removeKeyboardListener(int listenerId) {
     keyboardListeners.remove(listenerId);
   }
@@ -69,6 +80,7 @@ abstract class HidListenerBackend {
   @protected
   HashMap<int, void Function(RawKeyEvent)> keyboardListeners =
       HashMap.identity();
+  HashMap<int, void Function(KeyEvent)> keyboardListeners2 = HashMap.identity();
   @protected
   HashMap<int, void Function(MouseEvent)> mouseListeners = HashMap.identity();
 
