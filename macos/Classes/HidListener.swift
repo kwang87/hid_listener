@@ -7,140 +7,146 @@ var listenerInstance: HidListener?
 
 var prevFlags = UInt64(256)
 
+// ===========================================================
+// MARK: Keyboard Callback
+// ===========================================================
 func keyboardEventCallback(
-  proxy _: CGEventTapProxy, type: CGEventType, event: CGEvent, _: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
+  proxy: CGEventTapProxy,
+  type: CGEventType,
+  event: CGEvent,
+  userInfo: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? 
+{
   NSLog("✅ keyboardEventCallback") //
+  // NSEvent 생성은 반드시 메인 큐
   DispatchQueue.main.async {
-    if let nsEvent = NSEvent(cgEvent: event) {
-      let eventType: MacOsKeyboardEventType
-      var characters = ""
-      var charactersIgnoringModifiers = ""
+    guard let nsEvent = NSEvent(cgEvent: event) else { return }
 
-      if type == .flagsChanged {
-        eventType = prevFlags < event.flags.rawValue ? .KeyDown : .KeyUp
-        // 🚩 flagsChanged 이벤트는 절대 characters 접근하지 말 것
-        characters = ""
-        charactersIgnoringModifiers = ""
-      } else if type == .keyDown {
-        eventType = .KeyDown
-        characters = nsEvent.characters ?? " "
-        charactersIgnoringModifiers = nsEvent.charactersIgnoringModifiers ?? " "
-      } else {
-        eventType = .KeyUp
-        characters = nsEvent.characters ?? " "
-        charactersIgnoringModifiers = nsEvent.charactersIgnoringModifiers ?? " "
-      }
+    let eventType: MacOsKeyboardEventType
+    var characters = ""
+    var charactersIgnoringModifiers = ""
 
-      let keyCode = Int(nsEvent.keyCode)
-      let modifiers = Int(nsEvent.modifierFlags.rawValue)
-      let keyboardEvent = Unmanaged<MacOsKeyboardEvent>.passRetained(MacOsKeyboardEvent(
+    // ---- flagsChanged 특별 처리 ----
+    if type == .flagsChanged {
+      eventType = (prevFlags < event.flags.rawValue)
+        ? .KeyDown
+        : .KeyUp
+      
+      // flagsChanged 시 IME 조합문자 접근 금지 (Crash 방지)
+      characters = ""
+      charactersIgnoringModifiers = ""
+
+    } else if type == .keyDown {
+      eventType = .KeyDown
+      characters = nsEvent.characters ?? ""
+      charactersIgnoringModifiers = nsEvent.charactersIgnoringModifiers ?? ""
+
+    } else {
+      eventType = .KeyUp
+      characters = nsEvent.characters ?? ""
+      charactersIgnoringModifiers = nsEvent.charactersIgnoringModifiers ?? ""
+    }
+
+    let keyCode = Int(nsEvent.keyCode)
+    let modifiers = Int(nsEvent.modifierFlags.rawValue)
+
+    let keyboardEvent = Unmanaged.passRetained(
+      MacOsKeyboardEvent(
         eventType: eventType,
         characters: characters,
         charactersIgnoringModifiers: charactersIgnoringModifiers,
         keyCode: keyCode,
         modifiers: modifiers,
         isMedia: false,
-        mediaEventType: MacOsMediaEventType.Play
-      ))
+        mediaEventType: .Play
+      )
+    )
 
-      let pointerEvent = UnsafeMutablePointer<MacOsKeyboardEvent>.allocate(capacity: 1)
-      pointerEvent.initialize(to: keyboardEvent.takeRetainedValue())
-      NSLog("✅ notifyDart") //
-      notifyDart(port: keyboardListenerPort, data: pointerEvent)
-    }
-    // === 여기서 prevFlags를 반드시 업데이트 ===
+    NSLog("✅ notifyDart") //
+    let pointerEvent = UnsafeMutablePointer<MacOsKeyboardEvent>.allocate(capacity: 1)
+    pointerEvent.initialize(to: keyboardEvent.takeRetainedValue())
+
+    notifyDart(port: keyboardListenerPort, data: pointerEvent)
+
+    // modifier key 판별을 위해 반드시 갱신
     prevFlags = event.flags.rawValue
   }
   NSLog("✅ end keyboardEventCallback") //
   return Unmanaged.passRetained(event)
 }
 
+
+// ===========================================================
+// MARK: Media Key Callback
+// ===========================================================
 func mediaEventCallback(
-  proxy _: CGEventTapProxy, type _: CGEventType, event: CGEvent, _: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
+  proxy: CGEventTapProxy,
+  type: CGEventType,
+  event: CGEvent,
+  userInfo: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? 
+{
   DispatchQueue.main.async {
     NSLog("✅ mediaEventCallback") //
     NSLog("event \(event)") 
-    
-    // if event.type.rawValue != NX_SYSDEFINED {
-    //     NSLog("⚠️ Unsupported event.type.rawValue(NX_SYSDEFINED): %d, skip", event.type.rawValue)
-    //   return Unmanaged.passRetained(event)
-    // }
-  
-    // // NSEvent 생성 안전하게 시도
-    // guard let nsEvent = NSEvent(cgEvent: event) else {
-    //   NSLog("⚠️ NSEvent creation failed, skip")
-    //   return Unmanaged.passRetained(event)
-    // }
+    guard let nsEvent = NSEvent(cgEvent: event) else { return }
 
-    if let nsEvent = NSEvent(cgEvent: event) {
-      // if nsEvent.subtype.rawValue != 8 {
-      //   NSLog("⚠️ Unsupported media subtype: %d, skip", nsEvent.subtype.rawValue)
-      //   return Unmanaged.passRetained(event)
-      // }
+    let keyCode = (UInt32(bitPattern: Int32(nsEvent.data1)) & 0xFFFF0000) >> 16
+    let isKeyDown = ((nsEvent.data1 & 0xFF00) >> 8) == 0xA
 
-      NSLog("nsEvent %@", nsEvent)
-      let keyCode = (UInt32(bitPattern: Int32(nsEvent.data1)) & 0xFFFF0000) >> 16
-      NSLog("KeyCode: %d", keyCode)
-      //let keyCode = (nsEvent.data1 & 0xFFFF_0000) >> 16
-      let keyDown = ((nsEvent.data1 & 0xFF00) >> 8) == 0xA
-      NSLog("KeyDown %d", keyDown ? 1 : 0)
-
-      let mediaEventType: MacOsMediaEventType? = {
-        switch Int32(keyCode) {
-        case NX_KEYTYPE_PLAY: return MacOsMediaEventType.Play
-        case NX_KEYTYPE_PREVIOUS: return MacOsMediaEventType.Previous
-        case NX_KEYTYPE_NEXT: return MacOsMediaEventType.Next
-        case NX_KEYTYPE_REWIND: return MacOsMediaEventType.Rewind
-        case NX_KEYTYPE_FAST: return MacOsMediaEventType.Fast
-        case NX_KEYTYPE_MUTE: return MacOsMediaEventType.Mute
-        case NX_KEYTYPE_BRIGHTNESS_UP: return MacOsMediaEventType.BrightnessUp
-        case NX_KEYTYPE_BRIGHTNESS_DOWN: return MacOsMediaEventType.BrightnessDown
-        case NX_KEYTYPE_SOUND_UP: return MacOsMediaEventType.VolumeUp
-        case NX_KEYTYPE_SOUND_DOWN: return MacOsMediaEventType.VolumeDown 
-        default: return nil
-        }
-      }()
-
-      // if mediaEventType == nil {
-      //   NSLog("⚠️ mediaEventType nil, skip notifyDart")
-      //   return Unmanaged.passRetained(event)
-      // }
-
-
-      if mediaEventType != nil {
-        let eventType = {
-          switch keyDown {
-          case true: return MacOsKeyboardEventType.KeyDown
-          case false: return MacOsKeyboardEventType.KeyUp
-          }
-        }()
-
-        let keyboardEvent = Unmanaged<MacOsKeyboardEvent>.passRetained(MacOsKeyboardEvent(
-          eventType: eventType,
-          characters: " ",
-          charactersIgnoringModifiers: " ",
-          keyCode: 0,
-          modifiers: 0,
-          isMedia: true,
-          mediaEventType: mediaEventType!
-        ))
-
-        let pointerEvent = UnsafeMutablePointer<MacOsKeyboardEvent>.allocate(capacity: 1)
-        pointerEvent.initialize(to: keyboardEvent.takeRetainedValue())
-        NSLog("✅ notifyDart in Media") //
-        notifyDart(port: keyboardListenerPort, data: pointerEvent)
+    let mediaEventType: MacOsMediaEventType? = {
+      switch Int32(keyCode) {
+      case NX_KEYTYPE_PLAY: return .Play
+      case NX_KEYTYPE_PREVIOUS: return .Previous
+      case NX_KEYTYPE_NEXT: return .Next
+      case NX_KEYTYPE_REWIND: return .Rewind
+      case NX_KEYTYPE_FAST: return .Fast
+      case NX_KEYTYPE_MUTE: return .Mute
+      case NX_KEYTYPE_BRIGHTNESS_UP: return .BrightnessUp
+      case NX_KEYTYPE_BRIGHTNESS_DOWN: return .BrightnessDown
+      case NX_KEYTYPE_SOUND_UP: return .VolumeUp
+      case NX_KEYTYPE_SOUND_DOWN: return .VolumeDown
+      default: return nil
       }
-    }
+    }()
+
+    guard let mediaType = mediaEventType else { return }
+
+    let eventType: MacOsKeyboardEventType = isKeyDown ? .KeyDown : .KeyUp
+
+    let keyboardEvent = Unmanaged.passRetained(
+      MacOsKeyboardEvent(
+        eventType: eventType,
+        characters: " ",
+        charactersIgnoringModifiers: " ",
+        keyCode: 0,
+        modifiers: 0,
+        isMedia: true,
+        mediaEventType: mediaType
+      )
+    )
+
+    let pointerEvent = UnsafeMutablePointer<MacOsKeyboardEvent>.allocate(capacity: 1)
+    pointerEvent.initialize(to: keyboardEvent.takeRetainedValue())
+
+    notifyDart(port: keyboardListenerPort, data: pointerEvent)
   }
   NSLog("✅ end mediaEventCallback") //
+
   return Unmanaged.passRetained(event)
 }
 
+
+// ===========================================================
+// MARK: Mouse Callback (즉시 처리 = 성능 유지)
+// ===========================================================
 func mouseEventCallback(
-  proxy _: CGEventTapProxy, type: CGEventType, event: CGEvent, _: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
+  proxy: CGEventTapProxy,
+  type: CGEventType,
+  event: CGEvent,
+  userInfo: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? 
+{
   let mouseLoc = NSEvent.mouseLocation
   let mouseEvent = UnsafeMutablePointer<MouseEvent>.allocate(capacity: 1)
 
@@ -158,15 +164,14 @@ func mouseEventCallback(
   } else if type == .mouseMoved || type == .leftMouseDragged || type == .rightMouseDragged {
     mouseEvent.pointee.eventType = MouseEventType(4)
   } else if type == .scrollWheel {
-    let verticalScroll = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-    let horizontalScroll = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
-
-    if verticalScroll != 0 {
+    let v = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+    let h = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+    if v != 0 {
       mouseEvent.pointee.eventType = MouseEventType(5)
-      mouseEvent.pointee.wheelDelta = verticalScroll
-    } else if horizontalScroll != 0 {
+      mouseEvent.pointee.wheelDelta = v
+    } else if h != 0 {
       mouseEvent.pointee.eventType = MouseEventType(6)
-      mouseEvent.pointee.wheelDelta = horizontalScroll
+      mouseEvent.pointee.wheelDelta = h
     }
   }
 
@@ -175,84 +180,91 @@ func mouseEventCallback(
   return Unmanaged.passRetained(event)
 }
 
+
+// ===========================================================
+// MARK: Listener Class (두 버전 구조 그대로 유지)
+// ===========================================================
 public class HidListener {
   let keyboardQueue = DispatchQueue(label: "HidListener Keyboard Queue")
   var initialized = false
   var rootInitializer = false
 
   public init() {
-    if listenerInstance != nil {
-      return
-    }
-
+    if listenerInstance != nil { return }
     rootInitializer = true
     listenerInstance = self
   }
 
   public func initialize() -> Bool {
     NSLog("✅ initialize called") //
+
+    // flagsChanged 포함 → modifier key 지원
     let keyboardEventMask =
-      (1 << CGEventType.keyDown.rawValue)
-        | (1 << CGEventType.keyUp.rawValue)
-        | (1 << CGEventType.flagsChanged.rawValue)
+      (1 << CGEventType.keyDown.rawValue) |
+      (1 << CGEventType.keyUp.rawValue) |
+      (1 << CGEventType.flagsChanged.rawValue)
 
-    guard
-      let keyboardEventTap = CGEvent.tapCreate(
-        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-        eventsOfInterest: CGEventMask(keyboardEventMask), callback: keyboardEventCallback, userInfo: nil
-      )
-    else {
-      return false
-    }
+    guard let keyboardTap = CGEvent.tapCreate(
+      tap: .cgSessionEventTap,
+      place: .headInsertEventTap,
+      options: .defaultTap,
+      eventsOfInterest: CGEventMask(keyboardEventMask),
+      callback: keyboardEventCallback,
+      userInfo: nil
+    ) else { return false }
 
-    guard
-      let mediaEventTap = CGEvent.tapCreate(
-        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-        eventsOfInterest: CGEventMask(1 << NX_SYSDEFINED), callback: mediaEventCallback, userInfo: nil
-      )
-    else {
-      return false
-    }
+    guard let mediaTap = CGEvent.tapCreate(
+      tap: .cgSessionEventTap,
+      place: .headInsertEventTap,
+      options: .defaultTap,
+      eventsOfInterest: CGEventMask(1 << NX_SYSDEFINED),
+      callback: mediaEventCallback,
+      userInfo: nil
+    ) else { return false }
 
-    let mouseEventMask =
-      (1 << CGEventType.leftMouseDown.rawValue) | (1 << CGEventType.leftMouseUp.rawValue) |
-      (1 << CGEventType.rightMouseDown.rawValue) | (1 << CGEventType.rightMouseUp.rawValue) |
-      (1 << CGEventType.mouseMoved.rawValue) | (1 << CGEventType.scrollWheel.rawValue) |
-      (1 << CGEventType.leftMouseDragged.rawValue) | (1 << CGEventType.rightMouseDragged.rawValue)
+    let mouseMask =
+      (1 << CGEventType.leftMouseDown.rawValue) |
+      (1 << CGEventType.leftMouseUp.rawValue) |
+      (1 << CGEventType.rightMouseDown.rawValue) |
+      (1 << CGEventType.rightMouseUp.rawValue) |
+      (1 << CGEventType.mouseMoved.rawValue) |
+      (1 << CGEventType.scrollWheel.rawValue) |
+      (1 << CGEventType.leftMouseDragged.rawValue) |
+      (1 << CGEventType.rightMouseDragged.rawValue)
 
-    guard
-      let mouseEventTap = CGEvent.tapCreate(
-        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-        eventsOfInterest: CGEventMask(mouseEventMask), callback: mouseEventCallback, userInfo: nil
-      )
-    else {
-      return false
-    }
+    guard let mouseTap = CGEvent.tapCreate(
+      tap: .cgSessionEventTap,
+      place: .headInsertEventTap,
+      options: .defaultTap,
+      eventsOfInterest: CGEventMask(mouseMask),
+      callback: mouseEventCallback,
+      userInfo: nil
+    ) else { return false }
 
     keyboardQueue.async {
-      let keyboardRunLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, keyboardEventTap, 0)
-      let mediaRunLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mediaEventTap, 0)
-      let mouseRunLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mouseEventTap, 0)
-      CFRunLoopAddSource(CFRunLoopGetCurrent(), keyboardRunLoopSource, .commonModes)
-      CFRunLoopAddSource(CFRunLoopGetCurrent(), mediaRunLoopSource, .commonModes)
-      CFRunLoopAddSource(CFRunLoopGetCurrent(), mouseRunLoopSource, .commonModes)
-      CGEvent.tapEnable(tap: keyboardEventTap, enable: true)
-      CGEvent.tapEnable(tap: mediaEventTap, enable: true)
-      CGEvent.tapEnable(tap: mouseEventTap, enable: true)
+      let kr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, keyboardTap, 0)
+      let mr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mediaTap, 0)
+      let rr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mouseTap, 0)
+
+      CFRunLoopAddSource(CFRunLoopGetCurrent(), kr, .commonModes)
+      CFRunLoopAddSource(CFRunLoopGetCurrent(), mr, .commonModes)
+      CFRunLoopAddSource(CFRunLoopGetCurrent(), rr, .commonModes)
+
+      CGEvent.tapEnable(tap: keyboardTap, enable: true)
+      CGEvent.tapEnable(tap: mediaTap, enable: true)
+      CGEvent.tapEnable(tap: mouseTap, enable: true)
+
       CFRunLoopRun()
     }
 
     initialized = true
-
-    return initialized
+    return true
   }
 
-  deinit {
-    if rootInitializer {
-      listenerInstance = nil
-    }
-  }
+  deinit { if rootInitializer { listenerInstance = nil } }
 }
+
+
 
 var keyboardListenerPort: Dart_Port = 0
 var mouseListenerPort: Dart_Port = 0
