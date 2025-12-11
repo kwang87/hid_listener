@@ -1,6 +1,7 @@
 import 'dart:ffi' as ffi;
 import 'dart:isolate';
 
+import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
 import 'package:hid_listener/src/hid_listener.dart';
 import 'package:hid_listener/src/shared/hid_listener_shared.dart' as shared;
@@ -45,33 +46,41 @@ class MacOsHidListenerBackend extends HidListenerBackend {
   }
 
   void _keyboardProc(dynamic e) {
+    // 주소를 포인터로 변환
     final eventAddr =
         ffi.Pointer<ffi.Pointer<bindings.ObjCObject>>.fromAddress(e);
-    final event =
-        bindings.MacOsKeyboardEvent.castFromPointer(_bindings, eventAddr.value);
 
-    final RawKeyEventData eventData;
-    if (!event.isMedia) {
-      eventData = _nonMediaKeyboardProc(event);
-    } else {
-      final data = _mediaKeyboardProc(event);
-      if (data == null) return;
-      eventData = data;
-    }
+    try {
+      final event = bindings.MacOsKeyboardEvent.castFromPointer(
+          _bindings, eventAddr.value);
 
-    final RawKeyEvent rawKeyEvent;
-    final KeyEvent keyEvent;
-    if (event.eventType ==
-        bindings.MacOsKeyboardEventType.MacOsKeyboardEventTypeKeyDown) {
-      rawKeyEvent = RawKeyDownEvent(data: eventData);
-      // keyEvent = RawKeyDownEvent(data: eventData);
-    } else {
-      rawKeyEvent = RawKeyUpEvent(data: eventData);
-    }
+      final RawKeyEventData eventData;
+      if (!event.isMedia) {
+        eventData = _nonMediaKeyboardProc(event);
+      } else {
+        final data = _mediaKeyboardProc(event);
+        if (data == null) return;
+        eventData = data;
+      }
 
-    for (final listener in keyboardListeners.values) {
-      listener(rawKeyEvent);
+      final RawKeyEvent rawKeyEvent;
+      final KeyEvent keyEvent;
+      if (event.eventType ==
+          bindings.MacOsKeyboardEventType.MacOsKeyboardEventTypeKeyDown) {
+        rawKeyEvent = RawKeyDownEvent(data: eventData);
+        // keyEvent = RawKeyDownEvent(data: eventData);
+      } else {
+        rawKeyEvent = RawKeyUpEvent(data: eventData);
+      }
+
+      for (final listener in keyboardListeners.values) {
+        listener(rawKeyEvent);
+      }
+    } finally {
+      // 사용 후 반드시 free! (try-finally로 보장)
+      calloc.free(eventAddr); // 또는 malloc.free(pointer) – Swift allocate에 맞게
     }
+    // 객체 생성 (데이터 읽기)
   }
 
   RawKeyEventData _nonMediaKeyboardProc(bindings.MacOsKeyboardEvent event) {
