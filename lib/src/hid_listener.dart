@@ -33,25 +33,16 @@ final ffi.DynamicLibrary _dylib = () {
   throw UnsupportedError('Unknown platform: ${Platform.operatingSystem}');
 }();
 
+/// 플랫폼별 공통 인터페이스
 abstract class HidListenerBackend {
-  int? addKeyboardListener(void Function(RawKeyEvent) listener) {
+  /// KeyEvent 기반 listener 등록
+  int? addKeyboardListener(void Function(KeyEvent) listener) {
     if (!_keyboardRegistered) {
       if (!registerKeyboard()) return null;
       _keyboardRegistered = true;
     }
 
-    keyboardListeners.addAll({_lastKeyboardListenerId: listener});
-    return _lastKeyboardListenerId++;
-  }
-
-  //KeyEvent
-  int? addKeyboardListener2(void Function(KeyEvent) listener) {
-    if (!_keyboardRegistered) {
-      if (!registerKeyboard()) return null;
-      _keyboardRegistered = true;
-    }
-
-    keyboardListeners2.addAll({_lastKeyboardListenerId: listener});
+    keyboardListeners[_lastKeyboardListenerId] = listener;
     return _lastKeyboardListenerId++;
   }
 
@@ -65,7 +56,7 @@ abstract class HidListenerBackend {
       _mouseRegistered = true;
     }
 
-    mouseListeners.addAll({_lastMouseListenerId: listener});
+    mouseListeners[_lastMouseListenerId] = listener;
     return _lastMouseListenerId++;
   }
 
@@ -73,14 +64,19 @@ abstract class HidListenerBackend {
     mouseListeners.remove(listenerId);
   }
 
+  void setEnabled(bool enable) {
+    print('hid_listener setEnable: $enable');
+  }
+
   bool initialize();
   bool registerKeyboard();
   bool registerMouse();
+  // void setEnabled(bool enable);
 
+  // RawKeyEvent 제거 → KeyEvent 전용 Map
   @protected
-  HashMap<int, void Function(RawKeyEvent)> keyboardListeners =
-      HashMap.identity();
-  HashMap<int, void Function(KeyEvent)> keyboardListeners2 = HashMap.identity();
+  HashMap<int, void Function(KeyEvent)> keyboardListeners = HashMap.identity();
+
   @protected
   HashMap<int, void Function(MouseEvent)> mouseListeners = HashMap.identity();
 
@@ -91,6 +87,7 @@ abstract class HidListenerBackend {
   bool _mouseRegistered = false;
 }
 
+/// 플랫폼 백엔드 생성
 HidListenerBackend? _createPlatformBackend() {
   if (Platform.isWindows) return WindowsHidListenerBackend(_dylib);
   if (Platform.isMacOS) return MacOsHidListenerBackend(_dylib);
@@ -100,6 +97,4 @@ HidListenerBackend? _createPlatformBackend() {
 
 HidListenerBackend? _backend = _createPlatformBackend();
 
-HidListenerBackend? getListenerBackend() {
-  return _backend;
-}
+HidListenerBackend? getListenerBackend() => _backend;

@@ -4,8 +4,9 @@ import Foundation
 import HidListenerShared
 
 var listenerInstance: HidListener?
-
+var gIsHidListenerEnabled = true
 var prevFlags = UInt64(256)
+
 
 // ===========================================================
 // MARK: Keyboard Callback
@@ -18,6 +19,10 @@ func keyboardEventCallback(
 ) -> Unmanaged<CGEvent>? 
 {
   NSLog("✅ keyboardEventCallback") //
+  if !gIsHidListenerEnabled {
+    NSLog("✅ keyboardEventCallback isListenerEnabled is disable") //
+    return Unmanaged.passRetained(event)
+  }
   // NSEvent 생성은 반드시 메인 큐
   DispatchQueue.main.async {
     guard let nsEvent = NSEvent(cgEvent: event) else { return }
@@ -50,6 +55,8 @@ func keyboardEventCallback(
     let keyCode = Int(nsEvent.keyCode)
     let modifiers = Int(nsEvent.modifierFlags.rawValue)
 
+    NSLog("keyevent: native: keyCode=\(keyCode), chars=\(characters), ignore=\(charactersIgnoringModifiers), flags=\(modifiers)")
+
     let keyboardEvent = Unmanaged.passRetained(
       MacOsKeyboardEvent(
         eventType: eventType,
@@ -62,7 +69,8 @@ func keyboardEventCallback(
       )
     )
 
-    NSLog("✅ notifyDart") //
+    NSLog("notifyDart → port: \(keyboardListenerPort)")
+    
     let pointerEvent = UnsafeMutablePointer<MacOsKeyboardEvent>.allocate(capacity: 1)
     pointerEvent.initialize(to: keyboardEvent.takeRetainedValue())
 
@@ -86,8 +94,13 @@ func mediaEventCallback(
   userInfo: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? 
 {
+  if !gIsHidListenerEnabled {
+    NSLog("✅ mediaEventCallback isListenerEnabled is disable") //
+    return Unmanaged.passRetained(event)
+  }
+  
   DispatchQueue.main.async {
-    NSLog("✅ mediaEventCallback") //
+    NSLog("✅ mediaEventCallback") // 
     NSLog("event \(event)") 
     guard let nsEvent = NSEvent(cgEvent: event) else { return }
 
@@ -147,6 +160,13 @@ func mouseEventCallback(
   userInfo: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? 
 {
+
+  if !gIsHidListenerEnabled {
+    NSLog("✅ mouseEventCallback isListenerEnabled is disable") //
+    return Unmanaged.passRetained(event)
+  }
+  
+
   let mouseLoc = NSEvent.mouseLocation
   let mouseEvent = UnsafeMutablePointer<MouseEvent>.allocate(capacity: 1)
 
@@ -187,7 +207,12 @@ func mouseEventCallback(
 public class HidListener {
   let keyboardQueue = DispatchQueue(label: "HidListener Keyboard Queue")
   var initialized = false
-  var rootInitializer = false
+  var rootInitializer = false 
+
+  // 🚩 이벤트 탭 참조 저장용 변수 추가
+  private var keyboardTap: CFMachPort?
+  private var mediaTap: CFMachPort?
+  private var mouseTap: CFMachPort?
 
   public init() {
     if listenerInstance != nil { return }
@@ -202,25 +227,7 @@ public class HidListener {
     let keyboardEventMask =
       (1 << CGEventType.keyDown.rawValue) |
       (1 << CGEventType.keyUp.rawValue) |
-      (1 << CGEventType.flagsChanged.rawValue)
-
-    guard let keyboardTap = CGEvent.tapCreate(
-      tap: .cgSessionEventTap,
-      place: .headInsertEventTap,
-      options: .defaultTap,
-      eventsOfInterest: CGEventMask(keyboardEventMask),
-      callback: keyboardEventCallback,
-      userInfo: nil
-    ) else { return false }
-
-    guard let mediaTap = CGEvent.tapCreate(
-      tap: .cgSessionEventTap,
-      place: .headInsertEventTap,
-      options: .defaultTap,
-      eventsOfInterest: CGEventMask(1 << NX_SYSDEFINED),
-      callback: mediaEventCallback,
-      userInfo: nil
-    ) else { return false }
+      (1 << CGEventType.flagsChanged.rawValue) 
 
     let mouseMask =
       (1 << CGEventType.leftMouseDown.rawValue) |
@@ -232,38 +239,60 @@ public class HidListener {
       (1 << CGEventType.leftMouseDragged.rawValue) |
       (1 << CGEventType.rightMouseDragged.rawValue)
 
-    guard let mouseTap = CGEvent.tapCreate(
-      tap: .cgSessionEventTap,
-      place: .headInsertEventTap,
-      options: .defaultTap,
-      eventsOfInterest: CGEventMask(mouseMask),
-      callback: mouseEventCallback,
-      userInfo: nil
-    ) else { return false }
+    // 🚩 guard let을 제거하고 클래스 변수에 저장
+    self.keyboardTap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+        eventsOfInterest: CGEventMask(keyboardEventMask), callback: keyboardEventCallback, userInfo: nil
+    )
+    self.mediaTap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+        eventsOfInterest: CGEventMask(1 << NX_SYSDEFINED), callback: mediaEventCallback, userInfo: nil
+    )
+    self.mouseTap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+        eventsOfInterest: CGEventMask(mouseMask), callback: mouseEventCallback, userInfo: nil
+    )
+
+    guard let kTap = keyboardTap, let mTap = mediaTap, let moTap = mouseTap else { return false }
 
     keyboardQueue.async {
-      let kr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, keyboardTap, 0)
-      let mr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mediaTap, 0)
-      let rr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mouseTap, 0)
+        let kr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, kTap, 0)
+        let mr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mTap, 0)
+        let rr = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, moTap, 0)
 
-      CFRunLoopAddSource(CFRunLoopGetCurrent(), kr, .commonModes)
-      CFRunLoopAddSource(CFRunLoopGetCurrent(), mr, .commonModes)
-      CFRunLoopAddSource(CFRunLoopGetCurrent(), rr, .commonModes)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), kr, .commonModes)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), mr, .commonModes)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), rr, .commonModes)
 
-      CGEvent.tapEnable(tap: keyboardTap, enable: true)
-      CGEvent.tapEnable(tap: mediaTap, enable: true)
-      CGEvent.tapEnable(tap: mouseTap, enable: true)
+        CGEvent.tapEnable(tap: kTap, enable: true)
+        CGEvent.tapEnable(tap: mTap, enable: true)
+        CGEvent.tapEnable(tap: moTap, enable: true)
 
-      CFRunLoopRun()
+        CFRunLoopRun()
     }
 
     initialized = true
-    return true
+    return true 
+  }
+
+  // 🚩 On/Off 제어 메서드 추가
+  public func setEnabled(_ enabled: Bool) {
+      gIsHidListenerEnabled = enabled
+
+      if let k = keyboardTap { CGEvent.tapEnable(tap: k, enable: enabled) }
+      if let m = mediaTap { CGEvent.tapEnable(tap: m, enable: enabled) }
+      if let mo = mouseTap { CGEvent.tapEnable(tap: mo, enable: enabled) }
+      // 추가: enabled == false 일 때 즉시 포트 비우기 (선택적이지만 강력 추천)
+      // if !enabled {
+      //     keyboardListenerPort = 0
+      //     mouseListenerPort = 0
+      // }
+    
+      NSLog("✅ HidListener setEnabled: \(enabled)")
   }
 
   deinit { if rootInitializer { listenerInstance = nil } }
 }
-
 
 
 var keyboardListenerPort: Dart_Port = 0
@@ -279,6 +308,13 @@ func notifyDart(port: Dart_Port, data: UnsafeMutableRawPointer) {
   cObject.value.as_int64 = Int64(UInt(bitPattern: data))
 
   _ = Dart_PostCObject_DL(port, &cObject)
+}
+
+// 🚩 Dart에서 호출할 수 있도록 브릿지 함수 추가
+func Internal_SetListenerEnabled(enabled: Bool) -> Bool {
+    guard let instance = listenerInstance else { return false }
+    instance.setEnabled(enabled)
+    return true
 }
 
 func Internal_SetKeyboardListener(port: Dart_Port) -> Bool {
@@ -353,5 +389,9 @@ func Internal_InitializeListeners() -> Bool {
 
   @objc public static func SetMouseListener(port: Int64) -> Bool {
     return Internal_SetMouseListener(port: Dart_Port(port))
+  }
+ 
+  @objc public static func SetListenerEnabled(_ enabled: Bool) -> Bool {
+    return Internal_SetListenerEnabled(enabled: enabled)
   }
 }

@@ -14,94 +14,64 @@ class WindowsHidListenerBackend extends HidListenerBackend {
   }
 
   @override
-  bool initialize() {
-    return _bindings.InitializeListeners();
-  }
+  bool initialize() => _bindings.InitializeListeners();
 
   @override
   bool registerKeyboard() {
     final requests = ReceivePort()..listen(_keyboardProc);
-    final int nativePort = requests.sendPort.nativePort;
-
-    return _bindings.SetKeyboardListener(nativePort);
+    return _bindings.SetKeyboardListener(requests.sendPort.nativePort);
   }
 
   @override
   bool registerMouse() {
     final requests = ReceivePort()..listen(_mouseProc);
-    final int nativePort = requests.sendPort.nativePort;
-
-    return _bindings.SetMouseListener(nativePort);
+    return _bindings.SetMouseListener(requests.sendPort.nativePort);
   }
 
+  // ===========================================================
+  // KeyEvent Processor
+  // ===========================================================
   void _keyboardProc(dynamic event) {
-    final eventAddr =
-        ffi.Pointer<bindings.WindowsKeyboardEvent>.fromAddress(event);
+    if (event is! int || event == 0) return;
 
-    final vkCode = eventAddr.ref.vkCode;
-    final pressed =
-        eventAddr.ref.eventType == bindings.WindowsKeyboardEventType.WKE_KeyDown
-            ? 0xffffffff
-            : 0x0;
+    final ptr = ffi.Pointer<bindings.WindowsKeyboardEvent>.fromAddress(event);
 
-    final physicalKey = kWindowsToPhysicalKey[vkCode];
+    final vkCode = ptr.ref.vkCode;
+    final isDown =
+        ptr.ref.eventType == bindings.WindowsKeyboardEventType.WKE_KeyDown;
 
-    if (physicalKey == PhysicalKeyboardKey.altLeft) _lAltPressed = pressed;
-    if (physicalKey == PhysicalKeyboardKey.altRight) _rAltPressed = pressed;
+    // physical key
+    final physicalKey =
+        kWindowsToPhysicalKey[vkCode] ?? PhysicalKeyboardKey(vkCode);
 
-    if (physicalKey == PhysicalKeyboardKey.controlLeft) {
-      _lControlPressed = pressed;
-    }
-    if (physicalKey == PhysicalKeyboardKey.controlRight) {
-      _rControlPressed = pressed;
-    }
+    // logical key
+    final logicalKey = LogicalKeyboardKey(vkCode);
 
-    if (physicalKey == PhysicalKeyboardKey.metaLeft) _lMetaPressed = pressed;
-    if (physicalKey == PhysicalKeyboardKey.metaRight) _rMetaPressed = pressed;
+    final timestamp = Duration(
+      milliseconds: DateTime.now().millisecondsSinceEpoch,
+    );
 
-    if (physicalKey == PhysicalKeyboardKey.shiftLeft) _lShiftPressed = pressed;
-    if (physicalKey == PhysicalKeyboardKey.shiftRight) _rShiftPressed = pressed;
-
-    final altModifiers =
-        (RawKeyEventDataWindows.modifierAlt & (_lAltPressed | _rAltPressed)) |
-            (RawKeyEventDataWindows.modifierLeftAlt & _lAltPressed) |
-            (RawKeyEventDataWindows.modifierRightAlt & _rAltPressed);
-
-    final controlModifiers = (RawKeyEventDataWindows.modifierControl &
-            (_lControlPressed | _rControlPressed)) |
-        (RawKeyEventDataWindows.modifierLeftControl & _lControlPressed) |
-        (RawKeyEventDataWindows.modifierRightControl & _rControlPressed);
-
-    final metaModifiers =
-        (RawKeyEventDataWindows.modifierLeftMeta & _lMetaPressed) |
-            (RawKeyEventDataWindows.modifierRightMeta & _rMetaPressed);
-
-    final shiftModifiers = (RawKeyEventDataWindows.modifierShift &
-            (_lShiftPressed | _rShiftPressed)) |
-        (RawKeyEventDataWindows.modifierLeftShift & _lShiftPressed) |
-        (RawKeyEventDataWindows.modifierRightShift);
-
-    final modifiers =
-        altModifiers | controlModifiers | metaModifiers | shiftModifiers;
-
-    final eventData = RawKeyEventDataWindows(
-        keyCode: vkCode,
-        scanCode: eventAddr.ref.scanCode,
-        modifiers: modifiers);
-
-    final RawKeyEvent rawEvent;
-
-    if (pressed == 0xffffffff) {
-      rawEvent = RawKeyDownEvent(data: eventData);
-    } else {
-      rawEvent = RawKeyUpEvent(data: eventData);
-    }
+    final KeyEvent keyEvent = isDown
+        ? KeyDownEvent(
+            physicalKey: physicalKey,
+            logicalKey: logicalKey,
+            character: null, // Windows API 자체에서 character 제공 없음
+            timeStamp: timestamp,
+          )
+        : KeyUpEvent(
+            physicalKey: physicalKey,
+            logicalKey: logicalKey,
+            timeStamp: timestamp,
+          );
 
     for (final listener in keyboardListeners.values) {
-      listener(rawEvent);
+      listener(keyEvent);
     }
   }
 
+  // ===========================================================
+  // Mouse
+  // ===========================================================
   void _mouseProc(dynamic e) {
     final event = shared.mouseProc(e);
     if (event == null) return;
@@ -112,16 +82,4 @@ class WindowsHidListenerBackend extends HidListenerBackend {
   }
 
   final bindings.HidListenerBindingsWindows _bindings;
-
-  int _lAltPressed = 0;
-  int _rAltPressed = 0;
-
-  int _lControlPressed = 0;
-  int _rControlPressed = 0;
-
-  int _lMetaPressed = 0;
-  int _rMetaPressed = 0;
-
-  int _lShiftPressed = 0;
-  int _rShiftPressed = 0;
 }

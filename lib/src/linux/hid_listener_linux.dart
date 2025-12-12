@@ -9,136 +9,75 @@ import 'package:hid_listener/src/shared/hid_listener_shared.dart' as shared;
 import 'hid_listener_bindings_linux.dart' as bindings;
 
 class LinuxHidListenerBackend extends HidListenerBackend {
-  final Map<int, PhysicalKeyboardKey> x11ToPhysical = {
-    65505: PhysicalKeyboardKey.shiftLeft,
-    65506: PhysicalKeyboardKey.shiftRight,
-    65507: PhysicalKeyboardKey.controlLeft,
-    65508: PhysicalKeyboardKey.controlRight,
-    65513: PhysicalKeyboardKey.altLeft,
-    65514: PhysicalKeyboardKey.altRight,
-    65509: PhysicalKeyboardKey.capsLock,
-    65289: PhysicalKeyboardKey.tab,
-  };
-
-  final fallbackPhysicalKeyMap = {
-    65513: PhysicalKeyboardKey(0x000700e2), // altLeft
-    65514: PhysicalKeyboardKey(0x000700e6), // altRight
-    65505: PhysicalKeyboardKey(0x000700e1), // shiftLeft
-    65506: PhysicalKeyboardKey(0x000700e5), // shiftRight
-    65507: PhysicalKeyboardKey(0x000700e0), // ctrlLeft
-    65508: PhysicalKeyboardKey(0x000700e4), // ctrlRight
-    65509: PhysicalKeyboardKey(0x00070039), // capsLock
-  };
-
   LinuxHidListenerBackend(ffi.DynamicLibrary library)
       : _bindings = bindings.HidListenerBindingsLinux(library) {
     _bindings.InitializeDartAPI(ffi.NativeApi.initializeApiDLData);
   }
+
   @override
-  bool initialize() {
-    return _bindings.InitializeListeners();
-  }
+  bool initialize() => _bindings.InitializeListeners();
 
   @override
   bool registerKeyboard() {
-    final requests = ReceivePort()..listen(_keyboardProc);
-    final int nativePort = requests.sendPort.nativePort;
-
-    return _bindings.SetKeyboardListener(nativePort);
+    final req = ReceivePort()..listen(_keyboardProc);
+    return _bindings.SetKeyboardListener(req.sendPort.nativePort);
   }
 
   @override
   bool registerMouse() {
-    final requests = ReceivePort()..listen(_mouseProc);
-    final int nativePort = requests.sendPort.nativePort;
-
-    return _bindings.SetMouseListener(nativePort);
+    final req = ReceivePort()..listen(_mouseProc);
+    return _bindings.SetMouseListener(req.sendPort.nativePort);
   }
 
+  // ===========================================================
+  // KEY EVENT PROCESSOR (KeyEvent 기반)
+  // ===========================================================
   void _keyboardProc(dynamic e) {
-    final eventAddr = ffi.Pointer<bindings.LinuxKeyboardEvent>.fromAddress(e);
-    // print('eventAddr: $eventAddr');
-    final pressed =
-        eventAddr.ref.eventType == bindings.LinuxKeyboardEventType.LKE_KeyDown
-            ? 0xffffffff
-            : 0x0;
-    // print('pressed: $pressed');
+    if (e is! int || e == 0) return;
 
-    // final logicalKey = LogicalKeyboardKey.findKeyByKeyId(eventAddr.ref.keyCode);
-    // print(eventAddr.ref.keyCode);
-    // print('logical: $logicalKey');
-    // final physicalKey =
-    //     PhysicalKeyboardKey.findKeyByCode(eventAddr.ref.scanCode);
-    // print(eventAddr.ref.scanCode);
-    // print('physicalKey: $physicalKey');
-    // print(eventAddr.address);
+    final ptr = ffi.Pointer<bindings.LinuxKeyboardEvent>.fromAddress(e);
+    final ref = ptr.ref;
 
-    // PhysicalKeyboardKey? physicalKey2 =
-    //     PhysicalKeyboardKey.findKeyByCode(eventAddr.ref.scanCode) ??
-    //         x11ToPhysical[eventAddr.ref.keyCode];
-    // print('physicalKey2: $physicalKey2');
+    final isDown = ref.eventType == bindings.LinuxKeyboardEventType.LKE_KeyDown;
 
-    final keyHelper = GtkKeyHelper();
+    // X11 keycode → Physical key mapping fallback
+    PhysicalKeyboardKey physical =
+        PhysicalKeyboardKey.findKeyByCode(ref.scanCode) ??
+            PhysicalKeyboardKey.findKeyByCode(ref.keyCode) ??
+            PhysicalKeyboardKey(ref.keyCode);
 
-    final firstEventData = RawKeyEventDataLinux(
-        keyHelper: keyHelper,
-        unicodeScalarValues: eventAddr.ref.unicodeScalarValues,
-        scanCode: eventAddr.ref.scanCode,
-        keyCode: eventAddr.ref.keyCode,
-        isDown: pressed == 0xffffffff,
-        modifiers: 0);
+    LogicalKeyboardKey logical =
+        LogicalKeyboardKey.findKeyByKeyId(ref.keyCode) ??
+            LogicalKeyboardKey(ref.keyCode);
 
-    if (firstEventData.logicalKey == LogicalKeyboardKey.capsLock) {
-      _capslockEnabled = ~_capslockEnabled;
-    }
+    final timestamp =
+        Duration(milliseconds: DateTime.now().millisecondsSinceEpoch);
 
-    if (firstEventData.logicalKey == LogicalKeyboardKey.altLeft ||
-        firstEventData.logicalKey == LogicalKeyboardKey.altRight) {
-      _altPressed = pressed;
-    }
+    final String? character = ref.unicodeScalarValues == 0
+        ? null
+        : String.fromCharCode(ref.unicodeScalarValues);
 
-    if (firstEventData.logicalKey == LogicalKeyboardKey.controlLeft ||
-        firstEventData.logicalKey == LogicalKeyboardKey.controlRight) {
-      _controlPressed = pressed;
-    }
-
-    if (firstEventData.logicalKey == LogicalKeyboardKey.metaLeft ||
-        firstEventData.logicalKey == LogicalKeyboardKey.metaRight) {
-      _metaPressed = pressed;
-    }
-
-    if (firstEventData.logicalKey == LogicalKeyboardKey.shiftLeft ||
-        firstEventData.logicalKey == LogicalKeyboardKey.shiftRight) {
-      _shiftPressed = pressed;
-    }
-
-    final modifiers = (GtkKeyHelper.modifierCapsLock & _capslockEnabled) |
-        (GtkKeyHelper.modifierMod1 & _altPressed) |
-        (GtkKeyHelper.modifierControl & _controlPressed) |
-        (GtkKeyHelper.modifierMeta & _metaPressed) |
-        (GtkKeyHelper.modifierShift & _shiftPressed);
-
-    final eventData = RawKeyEventDataLinux(
-        keyHelper: keyHelper,
-        unicodeScalarValues: eventAddr.ref.unicodeScalarValues,
-        scanCode: eventAddr.ref.scanCode,
-        keyCode: eventAddr.ref.keyCode,
-        isDown: pressed == 0xffffffff,
-        modifiers: modifiers);
-
-    final RawKeyEvent event;
-
-    if (pressed == 0xffffffff) {
-      event = RawKeyDownEvent(data: eventData);
-    } else {
-      event = RawKeyUpEvent(data: eventData);
-    }
+    final KeyEvent keyEvent = isDown
+        ? KeyDownEvent(
+            physicalKey: physical,
+            logicalKey: logical,
+            character: character,
+            timeStamp: timestamp,
+          )
+        : KeyUpEvent(
+            physicalKey: physical,
+            logicalKey: logical,
+            timeStamp: timestamp,
+          );
 
     for (final listener in keyboardListeners.values) {
-      listener(event);
+      listener(keyEvent);
     }
   }
 
+  // ===========================================================
+  // Mouse
+  // ===========================================================
   void _mouseProc(dynamic e) {
     final event = shared.mouseProc(e);
     if (event == null) return;
@@ -149,10 +88,4 @@ class LinuxHidListenerBackend extends HidListenerBackend {
   }
 
   final bindings.HidListenerBindingsLinux _bindings;
-
-  int _capslockEnabled = 0;
-  int _altPressed = 0;
-  int _controlPressed = 0;
-  int _metaPressed = 0;
-  int _shiftPressed = 0;
 }
